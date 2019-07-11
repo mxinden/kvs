@@ -1,9 +1,12 @@
-extern crate clap;
-
 use clap::{Arg, App, AppSettings, SubCommand};
 use std::process::exit;
+use kvs::{Result};
 
-fn main() {
+fn main() -> Result<()>{
+    fn open_store() -> Result<kvs::KvStore>  {
+        kvs::KvStore::open(std::path::Path::new("./"))
+    };
+
     let matches = App::new(env!("CARGO_PKG_NAME"))
         .version(env!("CARGO_PKG_VERSION"))
         .author(env!("CARGO_PKG_AUTHORS"))
@@ -31,13 +34,30 @@ fn main() {
             eprintln!("unimplemented");
             exit(1);
         }
-        ("set", Some(_matches)) => {
-            eprintln!("unimplemented");
-            exit(1);
+        ("set", Some(matches)) => {
+            // clap enforces KEY argument.
+            let key = matches.value_of("KEY").unwrap();
+            // clap enforces VALUE argument.
+            let value = matches.value_of("VALUE").unwrap();
+
+            let mut store = open_store()?;
+
+            store.set(key.to_string(), value.to_string())
         }
-        ("rm", Some(_matches)) => {
-            eprintln!("unimplemented");
-            exit(1);
+        ("rm", Some(matches)) => {
+            // clap enforces KEY argument.
+            let key = matches.value_of("KEY").unwrap();
+
+            let mut store = open_store()?;
+
+            match store.remove(key.to_string()) {
+                Ok(()) => Ok(()),
+                Err(kvs::KvStoreError::KeyNotFound) => {
+                    println!("Key not found");
+                    exit(1);
+                },
+                Err(e) => return Err(e),
+            }
         }
         _ => unreachable!(),
     }
