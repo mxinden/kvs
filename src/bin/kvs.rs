@@ -30,9 +30,18 @@ fn main() -> Result<()>{
         .get_matches();
 
     match matches.subcommand() {
-        ("get", Some(_matches)) => {
-            eprintln!("unimplemented");
-            exit(1);
+        ("get", Some(matches)) => {
+            // clap enforces KEY argument.
+            let key = matches.value_of("KEY").unwrap();
+
+            let mut store = open_store()?;
+
+            match store.get(key.to_string())? {
+                Some(v) => println!("{}", v),
+                None => println!("{}", "Key not found"),
+            };
+
+            Ok(())
         }
         ("set", Some(matches)) => {
             // clap enforces KEY argument.

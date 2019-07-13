@@ -72,6 +72,22 @@ enum Command {
     Remove { k: String },
 }
 
+impl Command {
+    fn key(&self) -> String {
+        match self {
+            Command::Set { k, v: _} => k.to_string(),
+            Command::Remove { k } => k.to_string(),
+        }
+    }
+
+    fn value(&self) -> Option<String> {
+        match self {
+            Command::Set { k: _, v } => Some(v.to_string()),
+            Command::Remove { k: _ } => None,
+        }
+    }
+}
+
 /// KvStore stores values by their key.
 ///
 /// # Example
@@ -135,11 +151,9 @@ impl KvStore {
         let mut offset = 0;
 
         while let Some(cmd) = stream.next() {
-            let cmd = cmd.map_err(|c| KvStoreError::DeserializationFailure{c})?;
-            match cmd  {
-                Command::Set{k, v: _} => self.index.insert(k, offset),
-                Command::Remove{k} => self.index.insert(k, offset),
-            };
+            let cmd = cmd.map_err(|c| KvStoreError::DeserializationFailure { c })?;
+
+            self.index.insert(cmd.key(), offset);
 
             offset = stream.byte_offset();
         }
@@ -148,8 +162,30 @@ impl KvStore {
     }
 
     /// Returns the value for the given key.
-    pub fn get(&self, _k: String) -> Result<Option<String>> {
-        unimplemented!();
+    pub fn get(&mut self, k: String) -> Result<Option<String>> {
+        let offset = self.index.get(&k);
+
+        if offset.is_none() {
+            // We don't want to error when the key is not found.
+            return Ok(None);
+        }
+
+        let offset = offset.unwrap();
+
+        self.reader
+            .seek(std::io::SeekFrom::Start(*offset as u64))
+            .map_err(|c| KvStoreError::SeekFileFailure { c })?;
+
+        let mut stream = serde_json::Deserializer::from_reader(&mut self.reader)
+            .into_iter::<Command>();
+
+        if let Some(cmd) = stream.next() {
+            let cmd = cmd.map_err(|c| KvStoreError::DeserializationFailure { c })?;
+
+            return Ok(cmd.value());
+        }
+
+        Ok(None)
     }
 
     /// Sets the value for the given key.
@@ -162,8 +198,8 @@ impl KvStore {
     /// Removes the value of the given key.
     pub fn remove(&mut self, k: String) -> Result<()> {
         match self.index.get(&k) {
-            Some(v) => {},
-            None => return Err(KvStoreError::KeyNotFound)
+            Some(_v) => {}
+            None => return Err(KvStoreError::KeyNotFound),
         };
 
         let cmd = Command::Remove { k };
@@ -172,9 +208,19 @@ impl KvStore {
     }
 
     fn cmd_to_file(&mut self, cmd: Command) -> Result<()> {
+        // Seek to end of file.
+        let position = self.reader
+            .seek(std::io::SeekFrom::End(0))
+            .map_err(|c| KvStoreError::SeekFileFailure { c })?;
+
         let serialized =
             serde_json::to_string(&cmd).map_err(|c| KvStoreError::SerializationFailure { c })?;
 
-        writeln!(self.file, "{}", serialized).map_err(|c| KvStoreError::WriteToFileFailure { c })
+        writeln!(self.file, "{}", serialized).map_err(|c| KvStoreError::WriteToFileFailure { c })?;
+
+        // Update index.
+        self.index.insert(cmd.key(), position as usize);
+
+        Ok(())
     }
 }
