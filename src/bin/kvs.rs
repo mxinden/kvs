@@ -38,7 +38,7 @@ fn main() -> Result<()>{
 
             match store.get(key.to_string())? {
                 Some(v) => println!("{}", v),
-                None => println!("{}", "Key not found"),
+                None => println!("Key not found"),
             };
 
             Ok(())
@@ -65,7 +65,7 @@ fn main() -> Result<()>{
                     println!("Key not found");
                     exit(1);
                 },
-                Err(e) => return Err(e),
+                Err(e) => Err(e),
             }
         }
         _ => unreachable!(),

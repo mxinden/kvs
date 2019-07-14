@@ -99,15 +99,15 @@ enum Command {
 impl Command {
     fn key(&self) -> String {
         match self {
-            Command::Set { k, v: _} => k.to_string(),
+            Command::Set { k, .. } => k.to_string(),
             Command::Remove { k } => k.to_string(),
         }
     }
 
     fn value(&self) -> Option<String> {
         match self {
-            Command::Set { k: _, v } => Some(v.to_string()),
-            Command::Remove { k: _ } => None,
+            Command::Set {  v, .. } => Some(v.to_string()),
+            Command::Remove { .. } => None,
         }
     }
 }
@@ -178,7 +178,7 @@ impl KvStore {
     /// Removes the value of the given key.
     pub fn remove(&mut self, k: String) -> Result<()> {
         let exists = self.indexed_log_file.read(k.clone())?;
-        if let None = exists {
+        if exists.is_none() {
             return Err(KvStoreError::KeyNotFound);
         }
 
@@ -326,8 +326,8 @@ impl LogFile {
             })?;
         let reader = std::io::BufReader::new(read_file);
 
-        return Ok(LogFile{
-            reader: reader,
+        Ok(LogFile{
+            reader,
             file: write_file,
             position,
             num_writes: 0,
@@ -372,8 +372,6 @@ impl LogFile {
             .into_iter::<Command>();
 
         if let Some(cmd) = stream.next() {
-            if cmd.is_err() {
-            }
             let cmd = cmd.map_err(|c| KvStoreError::DeserializationFailure { c })?;
 
             Ok(Some(cmd))
