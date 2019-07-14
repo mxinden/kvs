@@ -28,7 +28,23 @@ pub enum KvStoreError {
 
     /// Failure when opening temporary file.
     #[fail(display = "failed to open temporary file")]
-    OpenTempFileFailure {
+    OpenTmpDirFailure {
+        /// Underlying io Error.
+        #[cause]
+        c: std::io::Error,
+    },
+
+    /// Failure when move file.
+    #[fail(display = "failed to move file")]
+    FileMoveFailure {
+        /// Underlying io Error.
+        #[cause]
+        c: std::io::Error,
+    },
+
+    /// Failure when flush file.
+    #[fail(display = "failed to flush file")]
+    FileFlushFailure {
         /// Underlying io Error.
         #[cause]
         c: std::io::Error,
@@ -102,13 +118,21 @@ impl Command {
 /// TODO: Update
 /// ``` rust
 /// use kvs::KvStore;
+/// use tempfile::TempDir;
 ///
-/// let mut s = KvStore::new();
-/// s.set("key1".to_owned(), "value1".to_owned());
-/// assert_eq!(s.get("key1".to_owned()), Some("value1".to_owned()));
+/// let temp_dir = TempDir::new().expect("unable to create temporary working directory");
+/// let mut store = KvStore::open(temp_dir.path()).unwrap();
+///
+/// store.set("key1".to_owned(), "value1".to_owned()).unwrap();
+/// store.set("key2".to_owned(), "value2".to_owned()).unwrap();
+///
+/// assert_eq!(store.get("key1".to_owned()).unwrap(), Some("value1".to_owned()));
+/// assert_eq!(store.get("key2".to_owned()).unwrap(), Some("value2".to_owned()));
 /// ```
 pub struct KvStore {
     indexed_log_file: IndexedLogFile,
+    // Needed later for compaction.
+    path: std::path::PathBuf,
 }
 
 impl KvStore {
@@ -118,6 +142,7 @@ impl KvStore {
 
         let kvs = KvStore {
             indexed_log_file: log_file,
+            path: path.to_path_buf(),
         };
 
         Ok(kvs)
@@ -125,29 +150,74 @@ impl KvStore {
 
     /// Returns the value for the given key.
     pub fn get(&mut self, k: String) -> Result<Option<String>> {
-        let value = self.indexed_log_file.get(k);
+        let cmd = self.indexed_log_file.read(k);
 
         // Don't error when key is not found.
-        if let Err(KvStoreError::KeyNotFound) = value {
+        if let Err(KvStoreError::KeyNotFound) = cmd {
             return Ok(None);
         }
 
-        value
+        if let Some(cmd) =  cmd? {
+            Ok(cmd.value())
+        } else {
+            Ok(None)
+        }
     }
 
     /// Sets the value for the given key.
     pub fn set(&mut self, k: String, v: String) -> Result<()> {
-        self.indexed_log_file.set(k, v)
+        self.indexed_log_file.write(Command::Set{k: k.clone(),v})?;
+
+        if self.should_compact() {
+            return self.compact_log();
+        }
+
+        Ok(())
     }
 
     /// Removes the value of the given key.
     pub fn remove(&mut self, k: String) -> Result<()> {
-        self.indexed_log_file.remove(k)
+        let exists = self.indexed_log_file.read(k.clone())?;
+        if let None = exists {
+            return Err(KvStoreError::KeyNotFound);
+        }
+
+        self.indexed_log_file.write(Command::Remove { k: k.clone() })
+    }
+
+    fn should_compact(&mut self) -> bool {
+        let index_size = self.indexed_log_file.index.len();
+
+        let num_writes = self.indexed_log_file.log_file.num_writes;
+
+        num_writes > 2 * index_size
     }
 
     fn compact_log(&mut self) -> Result<()> {
-        let mut tmp_file = tempfile::tempfile()
-            .map_err(|c| KvStoreError::OpenTempFileFailure { c })?;
+        // TODO: No reason to clone this thing except borrow checker.
+        let old_index = self.indexed_log_file.index.clone();
+
+        let tmp_folder = tempfile::tempdir()
+            .map_err(|c| KvStoreError::OpenTmpDirFailure { c })?;
+
+        let mut tmp_indexed_log = IndexedLogFile::new(tmp_folder.path())?;
+
+        for (k, _offset) in old_index.iter() {
+            let cmd = self.indexed_log_file.read(k.to_string())?;
+
+            let cmd = cmd.ok_or_else(|| KvStoreError::KeyNotFound)?;
+
+            tmp_indexed_log.write(cmd)?;
+        }
+
+        std::fs::rename(tmp_folder.path().join("db"), self.path.join("db"))
+            .map_err(|c| KvStoreError::FileMoveFailure{
+                c,
+            })?;
+
+        // TODO: This rebuilds the index again? We still have it in
+        // tmp_indexed_log.index.
+        self.indexed_log_file = IndexedLogFile::new(&self.path)?;
 
         Ok(())
     }
@@ -176,41 +246,25 @@ impl IndexedLogFile {
         Ok(indexed_log_file)
     }
 
-    fn get(&mut self, key: String) -> Result<Option<String>> {
+    fn read(&mut self, key: String) -> Result<Option<Command>> {
         let offset = self.index.get(&key)
             .ok_or_else(|| KvStoreError::KeyNotFound)?;
 
-        if let Some(cmd) =  self.log_file.read_cmd(*offset as Offset)? {
-            Ok(cmd.value())
-        } else {
-            Ok(None)
-        }
+
+        self.log_file.read_cmd(*offset as Offset)
     }
 
-    fn set(&mut self, k: String, v: String) -> Result<()> {
-        let offset = self.log_file.write_cmd(Command::Set{k: k.clone(),v})?;
-
-        self.index.insert(k, offset);
-
-        Ok(())
-    }
-
-    fn remove(&mut self, k: String) -> Result<()> {
-        match self.index.get(&k) {
-            Some(_v) => {}
-            None => return Err(KvStoreError::KeyNotFound),
-        };
-
-        let cmd = Command::Remove { k: k.clone() };
+    fn write(&mut self, cmd: Command) -> Result<()> {
+        let key = cmd.key();
 
         let offset = self.log_file.write_cmd(cmd)?;
-
-        self.index.insert(k, offset);
+        self.index.insert(key, offset);
 
         Ok(())
     }
 
     fn build_index(&mut self) -> Result<()>  {
+        let mut log_size = 0;
         let mut offset: Offset = 0;
 
         let reader = self.log_file.get_reader(offset)?;
@@ -219,12 +273,15 @@ impl IndexedLogFile {
             .into_iter::<Command>();
 
         while let Some(cmd) = stream.next() {
+            log_size += 1;
             let cmd = cmd.map_err(|c| KvStoreError::DeserializationFailure { c })?;
 
             self.index.insert(cmd.key(), offset);
 
             offset = stream.byte_offset() as Offset;
         }
+
+        self.log_file.num_writes = log_size;
 
         Ok(())
     }
@@ -238,6 +295,7 @@ struct LogFile {
     file: std::fs::File,
     // Position within the file.
     position: Offset,
+    num_writes: usize,
 }
 
 impl LogFile {
@@ -272,6 +330,7 @@ impl LogFile {
             reader: reader,
             file: write_file,
             position,
+            num_writes: 0,
         })
     }
 
@@ -281,11 +340,16 @@ impl LogFile {
         let serialized =
             serde_json::to_string(&cmd).map_err(|c| KvStoreError::SerializationFailure { c })?;
 
-        self.position = self.file.write(serialized.as_bytes())
+        self.position = offset + self.file.write(serialized.as_bytes())
             .map(|p| p as Offset)
             .map_err(|c| KvStoreError::WriteToFileFailure {
                 c,
             })?;
+
+        self.file.flush()
+            .map_err(|c| KvStoreError::FileFlushFailure{c})?;
+
+        self.num_writes += 1;
 
         Ok(offset)
     }
@@ -308,6 +372,8 @@ impl LogFile {
             .into_iter::<Command>();
 
         if let Some(cmd) = stream.next() {
+            if cmd.is_err() {
+            }
             let cmd = cmd.map_err(|c| KvStoreError::DeserializationFailure { c })?;
 
             Ok(Some(cmd))
