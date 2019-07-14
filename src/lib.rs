@@ -21,9 +21,17 @@ pub enum KvStoreError {
     OpenFileFailure {
         /// Underlying io Error.
         #[cause]
-        io_error: std::io::Error,
+        c: std::io::Error,
         /// Name of the file.
         name: String,
+    },
+
+    /// Failure when opening temporary file.
+    #[fail(display = "failed to open temporary file")]
+    OpenTempFileFailure {
+        /// Underlying io Error.
+        #[cause]
+        c: std::io::Error,
     },
 
     /// Failure when serializing input.
@@ -100,80 +108,200 @@ impl Command {
 /// assert_eq!(s.get("key1".to_owned()), Some("value1".to_owned()));
 /// ```
 pub struct KvStore {
-    reader: std::io::BufReader<std::fs::File>,
-    file: std::fs::File,
-    index: std::collections::HashMap<String, usize>,
+    indexed_log_file: IndexedLogFile,
 }
 
 impl KvStore {
     /// Create new KvStore from file.
     pub fn open(path: &std::path::Path) -> Result<KvStore> {
-        let path = path.join("db");
-        let write_file = std::fs::OpenOptions::new()
-            .write(true)
-            .create(true)
-            .append(true)
-            .open(path.clone())
-            .map_err(|e| KvStoreError::OpenFileFailure {
-                io_error: e,
-                name: path.display().to_string(),
-            })?;
+        let log_file = IndexedLogFile::new(path)?;
 
-        let read_file = std::fs::OpenOptions::new()
-            .read(true)
-            .open(path.clone())
-            .map_err(|e| KvStoreError::OpenFileFailure {
-                io_error: e,
-                name: path.display().to_string(),
-            })?;
-
-        let reader = std::io::BufReader::new(read_file);
-
-        let mut kvs = KvStore {
-            reader: reader,
-            file: write_file,
-            index: std::collections::HashMap::new(),
+        let kvs = KvStore {
+            indexed_log_file: log_file,
         };
-
-        kvs.build_index()?;
 
         Ok(kvs)
     }
 
-    fn build_index(&mut self) -> Result<()> {
-        self.reader
-            .seek(std::io::SeekFrom::Start(0))
-            .map_err(|c| KvStoreError::SeekFileFailure { c })?;
+    /// Returns the value for the given key.
+    pub fn get(&mut self, k: String) -> Result<Option<String>> {
+        let value = self.indexed_log_file.get(k);
 
-        let mut stream =
-            serde_json::Deserializer::from_reader(&mut self.reader).into_iter::<Command>();
+        // Don't error when key is not found.
+        if let Err(KvStoreError::KeyNotFound) = value {
+            return Ok(None);
+        }
 
-        let mut offset = 0;
+        value
+    }
+
+    /// Sets the value for the given key.
+    pub fn set(&mut self, k: String, v: String) -> Result<()> {
+        self.indexed_log_file.set(k, v)
+    }
+
+    /// Removes the value of the given key.
+    pub fn remove(&mut self, k: String) -> Result<()> {
+        self.indexed_log_file.remove(k)
+    }
+
+    fn compact_log(&mut self) -> Result<()> {
+        let mut tmp_file = tempfile::tempfile()
+            .map_err(|c| KvStoreError::OpenTempFileFailure { c })?;
+
+        Ok(())
+    }
+}
+
+type Offset = u64;
+
+struct IndexedLogFile {
+    log_file: LogFile,
+    index: std::collections::HashMap<String, Offset>,
+}
+
+impl IndexedLogFile {
+    fn new(path: &std::path::Path) -> Result<Self> {
+        let log_file = LogFile::new(path)?;
+
+        let index = std::collections::HashMap::new();
+
+        let mut indexed_log_file = IndexedLogFile{
+            log_file,
+            index,
+        };
+
+        indexed_log_file.build_index()?;
+
+        Ok(indexed_log_file)
+    }
+
+    fn get(&mut self, key: String) -> Result<Option<String>> {
+        let offset = self.index.get(&key)
+            .ok_or_else(|| KvStoreError::KeyNotFound)?;
+
+        if let Some(cmd) =  self.log_file.read_cmd(*offset as Offset)? {
+            Ok(cmd.value())
+        } else {
+            Ok(None)
+        }
+    }
+
+    fn set(&mut self, k: String, v: String) -> Result<()> {
+        let offset = self.log_file.write_cmd(Command::Set{k: k.clone(),v})?;
+
+        self.index.insert(k, offset);
+
+        Ok(())
+    }
+
+    fn remove(&mut self, k: String) -> Result<()> {
+        match self.index.get(&k) {
+            Some(_v) => {}
+            None => return Err(KvStoreError::KeyNotFound),
+        };
+
+        let cmd = Command::Remove { k: k.clone() };
+
+        let offset = self.log_file.write_cmd(cmd)?;
+
+        self.index.insert(k, offset);
+
+        Ok(())
+    }
+
+    fn build_index(&mut self) -> Result<()>  {
+        let mut offset: Offset = 0;
+
+        let reader = self.log_file.get_reader(offset)?;
+
+        let mut stream = serde_json::Deserializer::from_reader(reader)
+            .into_iter::<Command>();
 
         while let Some(cmd) = stream.next() {
             let cmd = cmd.map_err(|c| KvStoreError::DeserializationFailure { c })?;
 
             self.index.insert(cmd.key(), offset);
 
-            offset = stream.byte_offset();
+            offset = stream.byte_offset() as Offset;
         }
 
         Ok(())
     }
+}
 
-    /// Returns the value for the given key.
-    pub fn get(&mut self, k: String) -> Result<Option<String>> {
-        let offset = self.index.get(&k);
+// LogFile represents a database log file on disk.
+struct LogFile {
+    reader: std::io::BufReader<std::fs::File>,
+    // TODO: How about a buffered writer that we can flush once after
+    // compaction?
+    file: std::fs::File,
+    // Position within the file.
+    position: Offset,
+}
 
-        if offset.is_none() {
-            // We don't want to error when the key is not found.
-            return Ok(None);
-        }
+impl LogFile {
+    fn new(path: &std::path::Path) -> Result<LogFile> {
+        let path = path.join("db");
 
-        let offset = offset.unwrap();
+        let mut write_file = std::fs::OpenOptions::new()
+            .write(true)
+            .create(true)
+            .append(true)
+            .open(path.clone())
+            .map_err(|c| KvStoreError::OpenFileFailure {
+                c,
+                name: path.display().to_string(),
+            })?;
 
+        // Get end of file.
+        let position = write_file
+            .seek(std::io::SeekFrom::End(0))
+            .map_err(|c| KvStoreError::SeekFileFailure { c })?;
+
+        let read_file = std::fs::OpenOptions::new()
+            .read(true)
+            .open(path.clone())
+            .map_err(|c| KvStoreError::OpenFileFailure {
+                c,
+                name: path.display().to_string(),
+            })?;
+        let reader = std::io::BufReader::new(read_file);
+
+        return Ok(LogFile{
+            reader: reader,
+            file: write_file,
+            position,
+        })
+    }
+
+    fn write_cmd(&mut self, cmd: Command) -> Result<Offset> {
+        let offset = self.position;
+
+        let serialized =
+            serde_json::to_string(&cmd).map_err(|c| KvStoreError::SerializationFailure { c })?;
+
+        self.position = self.file.write(serialized.as_bytes())
+            .map(|p| p as Offset)
+            .map_err(|c| KvStoreError::WriteToFileFailure {
+                c,
+            })?;
+
+        Ok(offset)
+    }
+
+    // TODO: Call this iter()?
+    fn get_reader(&mut self, offset: Offset) -> Result<&mut std::io::BufReader<std::fs::File>>{
         self.reader
-            .seek(std::io::SeekFrom::Start(*offset as u64))
+            .seek(std::io::SeekFrom::Start(offset))
+            .map_err(|c| KvStoreError::SeekFileFailure { c })?;
+
+        Ok(&mut self.reader)
+    }
+
+    fn read_cmd(&mut self, offset: Offset) -> Result<Option<Command>>  {
+        self.reader
+            .seek(std::io::SeekFrom::Start(offset ))
             .map_err(|c| KvStoreError::SeekFileFailure { c })?;
 
         let mut stream = serde_json::Deserializer::from_reader(&mut self.reader)
@@ -182,45 +310,9 @@ impl KvStore {
         if let Some(cmd) = stream.next() {
             let cmd = cmd.map_err(|c| KvStoreError::DeserializationFailure { c })?;
 
-            return Ok(cmd.value());
+            Ok(Some(cmd))
+        } else {
+            Ok(None)
         }
-
-        Ok(None)
-    }
-
-    /// Sets the value for the given key.
-    pub fn set(&mut self, k: String, v: String) -> Result<()> {
-        let cmd = Command::Set { k, v };
-
-        self.cmd_to_file(cmd)
-    }
-
-    /// Removes the value of the given key.
-    pub fn remove(&mut self, k: String) -> Result<()> {
-        match self.index.get(&k) {
-            Some(_v) => {}
-            None => return Err(KvStoreError::KeyNotFound),
-        };
-
-        let cmd = Command::Remove { k };
-
-        self.cmd_to_file(cmd)
-    }
-
-    fn cmd_to_file(&mut self, cmd: Command) -> Result<()> {
-        // Seek to end of file.
-        let position = self.reader
-            .seek(std::io::SeekFrom::End(0))
-            .map_err(|c| KvStoreError::SeekFileFailure { c })?;
-
-        let serialized =
-            serde_json::to_string(&cmd).map_err(|c| KvStoreError::SerializationFailure { c })?;
-
-        writeln!(self.file, "{}", serialized).map_err(|c| KvStoreError::WriteToFileFailure { c })?;
-
-        // Update index.
-        self.index.insert(cmd.key(), position as usize);
-
-        Ok(())
     }
 }
