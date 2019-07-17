@@ -1,11 +1,15 @@
 use clap::{App, AppSettings, Arg, SubCommand};
+use env_logger;
+use log::{info, warn};
+use serde::{Deserialize, Serialize};
+use std::io::Write;
 use std::net::{TcpListener, TcpStream};
 use std::process::exit;
-use log::{info, warn};
-use env_logger;
+
+use kvs::network::{Req, Resp, SuccResp};
 
 fn main() -> Result<()> {
-    fn open_store() -> kvs::error::Result<kvs::KvStore>  {
+    fn open_store() -> kvs::error::Result<kvs::KvStore> {
         kvs::KvStore::open(std::path::Path::new("./"))
     };
 
@@ -40,7 +44,7 @@ fn main() -> Result<()> {
     let engine = matches.value_of("engine").unwrap();
     info!("Using engine '{}'.", engine);
 
-    let handler = if engine == "kvs" {
+    let mut handler = if engine == "kvs" {
         Handler {
             db: Box::new(open_store()?),
         }
@@ -48,7 +52,7 @@ fn main() -> Result<()> {
         unimplemented!();
     };
 
-    listen(addr.to_string(), handler)?;
+    listen(addr.to_string(), &mut handler)?;
 
     Ok(())
 }
@@ -58,17 +62,35 @@ struct Handler {
 }
 
 impl Handler {
-    fn handle(&self, stream: TcpStream) {
-        info!("We got a Tcp stream");
+    fn handle(&mut self, stream: &mut TcpStream) -> Result<()> {
+        let mut req_stream =
+            serde_json::Deserializer::from_reader(stream.try_clone().unwrap()).into_iter::<Req>();
+
+        let req = req_stream
+            .next()
+            .ok_or_else(|| ServerError::ClosedStream)??;
+
+        let resp: Resp = match req {
+            Req::Get(k) => self.db.get(k).map(|v| SuccResp::Get(v)),
+            Req::Set(k, v) => self.db.set(k,v).map(|()| SuccResp::Set),
+            Req::Remove(k) => self.db.remove(k).map(|()| SuccResp::Remove),
+        }
+        .map_err(|e| kvs::network::Error::Server(e.to_string()));
+
+        let serialized = serde_json::to_string(&resp)?;
+
+        stream.write_all(serialized.as_bytes())?;
+
+        Ok(())
     }
 }
 
-fn listen(addr: String, handler: Handler) -> std::io::Result<()> {
+fn listen(addr: String, handler: &mut Handler) -> std::io::Result<()> {
     // TODO: Remove unwrap.
     let listener = TcpListener::bind(addr).unwrap();
 
     for stream in listener.incoming() {
-        handler.handle(stream?);
+        handler.handle(&mut stream?);
     }
 
     Ok(())
@@ -80,7 +102,9 @@ type Result<T> = std::result::Result<T, ServerError>;
 #[derive(Debug)]
 pub enum ServerError {
     KvStore(kvs::KvStoreError),
+    ClosedStream,
     Io(std::io::Error),
+    SerdeJson(serde_json::error::Error),
 }
 
 impl From<kvs::KvStoreError> for ServerError {
@@ -92,5 +116,11 @@ impl From<kvs::KvStoreError> for ServerError {
 impl From<std::io::Error> for ServerError {
     fn from(err: std::io::Error) -> ServerError {
         ServerError::Io(err)
+    }
+}
+
+impl From<serde_json::error::Error> for ServerError {
+    fn from(err: serde_json::error::Error) -> ServerError {
+        ServerError::SerdeJson(err)
     }
 }

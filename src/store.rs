@@ -29,7 +29,15 @@ pub struct KvStore {
 }
 
 impl KvsEngine for KvStore {
-    
+    fn set(&mut self, key: String, value: String) -> Result<()> {
+        self.set(key, value)
+    }
+    fn get(&mut self, key: String) -> Result<Option<String>>{
+        self.get(key)
+    }
+    fn remove(&mut self, key: String) -> Result<()> {
+        self.remove(key)
+    }
 }
 
 impl KvStore {
