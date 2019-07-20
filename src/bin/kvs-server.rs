@@ -1,10 +1,12 @@
 use clap::{App, AppSettings, Arg, SubCommand};
 use env_logger;
-use log::{info, warn};
+use log::{info, warn, error};
 use serde::{Deserialize, Serialize};
 use std::io::Write;
 use std::net::{TcpListener, TcpStream};
 use std::process::exit;
+use std::fs;
+use std::io::Read;
 
 use kvs::network::{Req, Resp, SuccResp};
 
@@ -38,18 +40,30 @@ fn main() -> Result<()> {
         )
         .get_matches();
 
+
+    error!(env!("CARGO_PKG_VERSION"));
+
     let addr = matches.value_of("addr").unwrap();
-    info!("Listening on '{}'.", addr);
+    error!("Listening on '{}'.", addr);
 
     let engine = matches.value_of("engine").unwrap();
-    info!("Using engine '{}'.", engine);
+    check_and_persist_engine(engine.to_string())?;
+    error!("Using engine '{}'.", engine);
 
-    let mut handler = if engine == "kvs" {
-        Handler {
-            db: Box::new(open_store()?),
+    let mut handler = match engine {
+        "kvs" => {
+            Handler {
+                db: Box::new(open_store()?),
+            }
+        },
+        "sled" => {
+            Handler {
+                db: Box::new(kvs::sled::SledKvsEngine::open( std::path::Path::new("./"))?)
+            }
         }
-    } else {
-        unimplemented!();
+        &_ => {
+            unimplemented!();
+        }
     };
 
     listen(addr.to_string(), &mut handler)?;
@@ -105,6 +119,10 @@ pub enum ServerError {
     ClosedStream,
     Io(std::io::Error),
     SerdeJson(serde_json::error::Error),
+    EngineMissMatch{
+        previous_engine: String,
+        current_engine: String,
+    }
 }
 
 impl From<kvs::KvStoreError> for ServerError {
@@ -122,5 +140,35 @@ impl From<std::io::Error> for ServerError {
 impl From<serde_json::error::Error> for ServerError {
     fn from(err: serde_json::error::Error) -> ServerError {
         ServerError::SerdeJson(err)
+    }
+}
+
+fn check_and_persist_engine(engine: String) -> Result<()> {
+    let file_name = "./.engine".to_string();
+    match fs::File::open(file_name.clone()) {
+        Ok(mut f) => {
+            let mut persisted_engine = String::new();
+
+            f.read_to_string(&mut persisted_engine)?;
+
+            if engine != persisted_engine {
+                return Err(ServerError::EngineMissMatch{
+                    previous_engine: persisted_engine,
+                    current_engine: engine,
+                })
+            }
+
+            return Ok(())
+        }
+        Err(e) => {
+            match e.kind() {
+                std::io::ErrorKind::NotFound => {
+                    let mut file = fs::File::create(file_name)?;
+                    file.write_all(engine.as_bytes())?;
+                    Ok(())
+                },
+                _ => return Err(ServerError::Io(e)),
+            }
+        }
     }
 }

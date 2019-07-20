@@ -80,17 +80,26 @@ fn main() -> Result<()>{
         .next()
         .ok_or_else(|| ClientError::ClosedStream)??;
 
-    match resp? {
-        SuccResp::Get(v) => {
+    let key_not_found = "Key not found".to_string();
+
+    match resp {
+        Ok(SuccResp::Get(v)) => {
             match v {
-                None => println!("Key not found"),
+                None => println!("{}", key_not_found),
                 Some(v) => println!("{}", v),
             }
-        },
-        SuccResp::Set | SuccResp::Remove => info!("success"),
-    }
 
-    Ok(())
+            Ok(())
+        },
+        Ok(SuccResp::Set) | Ok(SuccResp::Remove) => {info!("success"); Ok(())},
+        Err(kvs::network::Error::Server(e)) => {
+            if e == key_not_found {
+                eprintln!("{}", key_not_found)
+            }
+
+            Err(ClientError::NetworkError(kvs::network::Error::Server(e)))
+        }
+    }
 }
 
 type Result<T> = std::result::Result<T, ClientError>;

@@ -2,3 +2,8 @@
 **/*.rs.bk
 
 db
+.engine
+
+# Sled specific.
+conf
+snap.*

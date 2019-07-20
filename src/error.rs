@@ -1,3 +1,5 @@
+
+
 /// Result type returned by the KvStore library.
 pub type Result<T> = std::result::Result<T, KvStoreError>;
 
@@ -77,4 +79,14 @@ pub enum KvStoreError {
     /// Failure finding key
     #[fail(display = "Key not found")]
     KeyNotFound,
+
+    /// Sled pagecache error
+    #[fail(display = "Sled page cache error")]
+    PageCache(pagecache::Error)
+}
+
+impl From<pagecache::Error> for KvStoreError {
+    fn from(err: pagecache::Error) -> KvStoreError {
+        KvStoreError::PageCache(err)
+    }
 }
