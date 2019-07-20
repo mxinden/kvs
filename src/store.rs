@@ -8,7 +8,7 @@ use std::io::Write;
 /// KvStore stores values by their key.
 ///
 /// # Example
-/// TODO: Update
+///
 /// ``` rust
 /// use kvs::KvStore;
 /// use tempfile::TempDir;
@@ -22,9 +22,11 @@ use std::io::Write;
 /// assert_eq!(store.get("key1".to_owned()).unwrap(), Some("value1".to_owned()));
 /// assert_eq!(store.get("key2".to_owned()).unwrap(), Some("value2".to_owned()));
 /// ```
+///
 pub struct KvStore {
     indexed_log_file: IndexedLogFile,
-    // Needed later for compaction.
+    // Needed later for compaction when replacing the old version by the
+    // compacted one.
     path: std::path::PathBuf,
 }
 

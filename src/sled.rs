@@ -1,4 +1,5 @@
 use crate::KvsEngine;
+use log::{error};
 use sled::Db;
 
 use crate::error::{KvStoreError, Result};
@@ -14,9 +15,14 @@ impl SledKvsEngine {
     pub fn open(path: &std::path::Path) -> Result<SledKvsEngine> {
         let db = Db::start_default(path)?;
 
-        Ok(SledKvsEngine{
-            tree: db,
-        })
+        Ok(SledKvsEngine { tree: db })
+    }
+
+    /// Flush dirty pages (fsync).
+    pub fn flush(&mut self) -> Result<()> {
+        self.tree.flush()
+            .map(|_| ())
+            .map_err(|e| KvStoreError::PageCache(e))
     }
 }
 
@@ -25,36 +31,52 @@ impl KvsEngine for SledKvsEngine {
     fn set(&mut self, key: String, value: String) -> Result<()> {
         let key = sled::IVec::from(key.as_bytes());
         let value = sled::IVec::from(value.as_bytes());
-        self.tree.set(key, value).map(|_| ()).map_err(|e| KvStoreError::PageCache(e))?;
-        // TODO: Don't just flush on each call.
-        self.tree.flush().map(|_| ()).map_err(|e| KvStoreError::PageCache(e))
+        self.tree
+            .set(key, value)
+            .map(|_| ())
+            .map_err(|e| KvStoreError::PageCache(e))?;
+
+        // Needed for testsuit.
+        self.flush()
     }
 
     /// Get the value of the given key.
     fn get(&mut self, key: String) -> Result<Option<String>> {
         let ivec = sled::IVec::from(key.as_bytes());
-        self.tree.get(ivec).map_err(|e| KvStoreError::PageCache(e)).map(|v| {
-            v.map(|v| {
-                let value: Vec<u8> = v.to_vec();
-                // TODO: Handle unwrap.
-                std::str::from_utf8(&value).unwrap().to_string()
+        self.tree
+            .get(ivec)
+            .map_err(|e| KvStoreError::PageCache(e))
+            .map(|v| {
+                v.map(|v| {
+                    let value: Vec<u8> = v.to_vec();
+                    // TODO: Handle unwrap.
+                    std::str::from_utf8(&value).unwrap().to_string()
+                })
             })
-        })
     }
 
     /// Remove the value of the given key.
     fn remove(&mut self, key: String) -> Result<()> {
         let key = sled::IVec::from(key.as_bytes());
-        self.tree.del(key)
+        self.tree
+            .del(key)
             .map_err(|e| KvStoreError::PageCache(e))
-            .and_then(|v| {
-                match v {
-                    Some(_) => Ok(()),
-                    None => Err(KvStoreError::KeyNotFound),
-                }
-        })?;
+            .and_then(|v| match v {
+                Some(_) => Ok(()),
+                None => Err(KvStoreError::KeyNotFound),
+            })?;
 
-        // TODO: Don't just flush on each call.
-        self.tree.flush().map(|_| ()).map_err(|e| KvStoreError::PageCache(e))
+        // Needed for testsuit.
+        self.flush()
+    }
+}
+
+impl Drop for SledKvsEngine {
+    fn drop(&mut self) {
+        error!("dropping sled ref");
+        self.tree
+            .flush()
+                // If this errors, we are *in serious trouble* anyways.
+            .unwrap();
     }
 }

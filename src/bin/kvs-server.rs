@@ -1,20 +1,16 @@
-use clap::{App, AppSettings, Arg, SubCommand};
+use clap::{App, AppSettings, Arg};
 use env_logger;
-use log::{info, warn, error};
-use serde::{Deserialize, Serialize};
+use log::error;
+
 use std::io::Write;
 use std::net::{TcpListener, TcpStream};
-use std::process::exit;
+
 use std::fs;
 use std::io::Read;
 
 use kvs::network::{Req, Resp, SuccResp};
 
 fn main() -> Result<()> {
-    fn open_store() -> kvs::error::Result<kvs::KvStore> {
-        kvs::KvStore::open(std::path::Path::new("./"))
-    };
-
     env_logger::init();
 
     let matches = App::new(env!("CARGO_PKG_NAME"))
@@ -40,7 +36,6 @@ fn main() -> Result<()> {
         )
         .get_matches();
 
-
     error!(env!("CARGO_PKG_VERSION"));
 
     let addr = matches.value_of("addr").unwrap();
@@ -51,16 +46,12 @@ fn main() -> Result<()> {
     error!("Using engine '{}'.", engine);
 
     let mut handler = match engine {
-        "kvs" => {
-            Handler {
-                db: Box::new(open_store()?),
-            }
+        "kvs" => Handler {
+            db: Box::new(kvs::KvStore::open(std::path::Path::new("./"))?),
         },
-        "sled" => {
-            Handler {
-                db: Box::new(kvs::sled::SledKvsEngine::open( std::path::Path::new("./"))?)
-            }
-        }
+        "sled" => Handler {
+            db: Box::new(kvs::sled::SledKvsEngine::open(std::path::Path::new("./"))?),
+        },
         &_ => {
             unimplemented!();
         }
@@ -86,7 +77,7 @@ impl Handler {
 
         let resp: Resp = match req {
             Req::Get(k) => self.db.get(k).map(|v| SuccResp::Get(v)),
-            Req::Set(k, v) => self.db.set(k,v).map(|()| SuccResp::Set),
+            Req::Set(k, v) => self.db.set(k, v).map(|()| SuccResp::Set),
             Req::Remove(k) => self.db.remove(k).map(|()| SuccResp::Remove),
         }
         .map_err(|e| kvs::network::Error::Server(e.to_string()));
@@ -99,12 +90,11 @@ impl Handler {
     }
 }
 
-fn listen(addr: String, handler: &mut Handler) -> std::io::Result<()> {
-    // TODO: Remove unwrap.
-    let listener = TcpListener::bind(addr).unwrap();
+fn listen(addr: String, handler: &mut Handler) -> Result<()> {
+    let listener = TcpListener::bind(addr)?;
 
     for stream in listener.incoming() {
-        handler.handle(&mut stream?);
+        handler.handle(&mut stream?)?;
     }
 
     Ok(())
@@ -119,10 +109,10 @@ pub enum ServerError {
     ClosedStream,
     Io(std::io::Error),
     SerdeJson(serde_json::error::Error),
-    EngineMissMatch{
+    EngineMissMatch {
         previous_engine: String,
         current_engine: String,
-    }
+    },
 }
 
 impl From<kvs::KvStoreError> for ServerError {
@@ -152,23 +142,21 @@ fn check_and_persist_engine(engine: String) -> Result<()> {
             f.read_to_string(&mut persisted_engine)?;
 
             if engine != persisted_engine {
-                return Err(ServerError::EngineMissMatch{
+                return Err(ServerError::EngineMissMatch {
                     previous_engine: persisted_engine,
                     current_engine: engine,
-                })
+                });
             }
 
-            return Ok(())
+            return Ok(());
         }
-        Err(e) => {
-            match e.kind() {
-                std::io::ErrorKind::NotFound => {
-                    let mut file = fs::File::create(file_name)?;
-                    file.write_all(engine.as_bytes())?;
-                    Ok(())
-                },
-                _ => return Err(ServerError::Io(e)),
+        Err(e) => match e.kind() {
+            std::io::ErrorKind::NotFound => {
+                let mut file = fs::File::create(file_name)?;
+                file.write_all(engine.as_bytes())?;
+                Ok(())
             }
-        }
+            _ => return Err(ServerError::Io(e)),
+        },
     }
 }

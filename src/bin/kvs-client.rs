@@ -1,8 +1,8 @@
 use clap::{Arg, App, AppSettings, SubCommand};
-use std::process::exit;
+
 use std::io::prelude::*;
 use std::net::TcpStream;
-use log::{info, warn};
+use log::{info};
 use env_logger;
 
 use kvs::network::{ Req, Resp, SuccResp};
@@ -83,6 +83,8 @@ fn main() -> Result<()>{
     let key_not_found = "Key not found".to_string();
 
     match resp {
+        // Test suit forces us to print "Key not found" on /remove/ and /get/,
+        // but only exit non zero for remove, not get.
         Ok(SuccResp::Get(v)) => {
             match v {
                 None => println!("{}", key_not_found),
