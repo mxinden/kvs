@@ -1,5 +1,4 @@
 use crate::KvsEngine;
-use log::{error};
 use sled::Db;
 
 use crate::error::{KvStoreError, Result};
@@ -29,10 +28,8 @@ impl SledKvsEngine {
 impl KvsEngine for SledKvsEngine {
     /// Set the value for the given key.
     fn set(&mut self, key: String, value: String) -> Result<()> {
-        let key = sled::IVec::from(key.as_bytes());
-        let value = sled::IVec::from(value.as_bytes());
         self.tree
-            .set(key, value)
+            .set(&*key, &*value)
             .map(|_| ())
             .map_err(|e| KvStoreError::PageCache(e))?;
 
@@ -68,15 +65,5 @@ impl KvsEngine for SledKvsEngine {
 
         // Needed for testsuit.
         self.flush()
-    }
-}
-
-impl Drop for SledKvsEngine {
-    fn drop(&mut self) {
-        error!("dropping sled ref");
-        self.tree
-            .flush()
-                // If this errors, we are *in serious trouble* anyways.
-            .unwrap();
     }
 }

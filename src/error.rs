@@ -76,17 +76,17 @@ pub enum KvStoreError {
         c: std::io::Error,
     },
 
-    /// Failure finding key
+    /// Failure finding key.
     #[fail(display = "Key not found")]
     KeyNotFound,
 
-    /// Sled pagecache error
+    /// Sled error.
     #[fail(display = "Sled page cache error")]
-    PageCache(pagecache::Error)
+    PageCache(sled::Error)
 }
 
-impl From<pagecache::Error> for KvStoreError {
-    fn from(err: pagecache::Error) -> KvStoreError {
+impl From<sled::Error> for KvStoreError {
+    fn from(err: sled::Error) -> KvStoreError {
         KvStoreError::PageCache(err)
     }
 }

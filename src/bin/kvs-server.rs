@@ -52,7 +52,7 @@ fn main() -> Result<()> {
         "sled" => Handler {
             db: Box::new(kvs::sled::SledKvsEngine::open(std::path::Path::new("./"))?),
         },
-        &_ => {
+        _ => {
             unimplemented!();
         }
     };
