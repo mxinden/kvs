@@ -20,14 +20,6 @@ fn main() -> Result<()> {
         .setting(AppSettings::DisableHelpSubcommand)
         .setting(AppSettings::VersionlessSubcommands)
         .arg(
-            Arg::with_name("engine")
-                .takes_value(true)
-                .long("engine")
-                .help("specify database engine")
-                .possible_values(&vec!["kvs", "sled"])
-                .default_value("kvs"),
-        )
-        .arg(
             Arg::with_name("addr")
                 .long("addr")
                 .takes_value(true)
@@ -41,20 +33,8 @@ fn main() -> Result<()> {
     let addr = matches.value_of("addr").unwrap();
     error!("Listening on '{}'.", addr);
 
-    let engine = matches.value_of("engine").unwrap();
-    check_and_persist_engine(engine.to_string())?;
-    error!("Using engine '{}'.", engine);
-
-    let mut handler = match engine {
-        "kvs" => Handler {
-            db: Box::new(kvs::KvStore::open(std::path::Path::new("./"))?),
-        },
-        "sled" => Handler {
-            db: Box::new(kvs::sled::SledKvsEngine::open(std::path::Path::new("./"))?),
-        },
-        _ => {
-            unimplemented!();
-        }
+    let mut handler = Handler {
+        db: Box::new(kvs::KvStore::open(std::path::Path::new("./"))?),
     };
 
     listen(addr.to_string(), &mut handler)?;

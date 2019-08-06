@@ -17,9 +17,6 @@ pub mod network;
 
 mod store;
 
-/// Bindings for sled database.
-pub mod sled;
-
 /// KvsEngine represents the storage interface used by KvsServer.
 pub trait KvsEngine {
     /// Set the value for the given key.
