@@ -1,6 +1,7 @@
 use clap::{App, AppSettings, Arg};
 use env_logger;
 use log::error;
+use kvs::thread_pool::ThreadPool;
 
 use std::io::Write;
 use std::net::{TcpListener, TcpStream};
@@ -33,23 +34,26 @@ fn main() -> Result<()> {
     let addr = matches.value_of("addr").unwrap();
     error!("Listening on '{}'.", addr);
 
-    let mut handler = Handler {
-        db: Box::new(kvs::KvStore::open(std::path::Path::new("./"))?),
+    let handler = Handler {
+        db: kvs::KvStore::open(std::path::Path::new("./"))?,
     };
 
-    listen(addr.to_string(), &mut handler)?;
+    let pool = kvs::thread_pool::NaiveThreadPool::new(0)?;
+
+    listen(addr.to_string(), pool, handler)?;
 
     Ok(())
 }
 
-struct Handler {
-    db: Box<kvs::KvsEngine>,
+#[derive(Clone)]
+struct Handler<E: kvs::KvsEngine> {
+    db: E,
 }
 
-impl Handler {
-    fn handle(&mut self, stream: &mut TcpStream) -> Result<()> {
+impl<E: kvs::KvsEngine> Handler<E> {
+    fn handle(&mut self, mut stream: TcpStream) -> Result<()> {
         let mut req_stream =
-            serde_json::Deserializer::from_reader(stream.try_clone().unwrap()).into_iter::<Req>();
+            serde_json::Deserializer::from_reader(&stream).into_iter::<Req>();
 
         let req = req_stream
             .next()
@@ -70,11 +74,22 @@ impl Handler {
     }
 }
 
-fn listen(addr: String, handler: &mut Handler) -> Result<()> {
+fn listen<E, P>(addr: String, pool: P, handler: Handler<E>) -> Result<()>
+where
+    E: kvs::KvsEngine,
+    P: kvs::thread_pool::ThreadPool,
+{
     let listener = TcpListener::bind(addr)?;
 
     for stream in listener.incoming() {
-        handler.handle(&mut stream?)?;
+        let stream = stream?;
+        let mut handler = handler.clone();
+        pool.spawn(move || {
+            match handler.handle(stream) {
+                Ok(()) => {},
+                Err(e) => error!("failed to handle stream: {:?}", e),
+            }
+        })
     }
 
     Ok(())

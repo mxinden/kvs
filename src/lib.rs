@@ -15,15 +15,18 @@ pub mod error;
 /// Types needed for client server network communication.
 pub mod network;
 
+/// Implementation of a basic thread pool.
+pub mod thread_pool;
+
 mod store;
 
 /// KvsEngine represents the storage interface used by KvsServer.
-pub trait KvsEngine {
+pub trait KvsEngine: Clone + Send + 'static {
     /// Set the value for the given key.
-    fn set(&mut self, key: String, value: String) -> Result<()>;
+    fn set(&self, key: String, value: String) -> Result<()>;
     /// Get the value of the given key.
-    fn get(&mut self, key: String) -> Result<Option<String>>;
+    fn get(&self, key: String) -> Result<Option<String>>;
     /// Remove the value of the given key.
-    fn remove(&mut self, key: String) -> Result<()>;
+    fn remove(&self, key: String) -> Result<()>;
 }
 

@@ -3,6 +3,7 @@ use crate::KvsEngine;
 use serde::{Deserialize, Serialize};
 use std::io::Seek;
 use std::io::Write;
+use std::sync::{Arc, Mutex};
 
 
 /// KvStore stores values by their key.
@@ -23,21 +24,22 @@ use std::io::Write;
 /// assert_eq!(store.get("key2".to_owned()).unwrap(), Some("value2".to_owned()));
 /// ```
 ///
+#[derive(Clone)]
 pub struct KvStore {
-    indexed_log_file: IndexedLogFile,
+    indexed_log_file: Arc<Mutex<IndexedLogFile>>,
     // Needed later for compaction when replacing the old version by the
     // compacted one.
     path: std::path::PathBuf,
 }
 
 impl KvsEngine for KvStore {
-    fn set(&mut self, key: String, value: String) -> Result<()> {
-        self.set(key, value)
+    fn set(&self, key: String, value: String) -> Result<()> {
+        KvStore::set(self, key, value)
     }
-    fn get(&mut self, key: String) -> Result<Option<String>>{
+    fn get(&self, key: String) -> Result<Option<String>>{
         self.get(key)
     }
-    fn remove(&mut self, key: String) -> Result<()> {
+    fn remove(&self, key: String) -> Result<()> {
         self.remove(key)
     }
 }
@@ -48,7 +50,7 @@ impl KvStore {
         let log_file = IndexedLogFile::new(path)?;
 
         let kvs = KvStore {
-            indexed_log_file: log_file,
+            indexed_log_file: Arc::new(Mutex::new(log_file)),
             path: path.to_path_buf(),
         };
 
@@ -56,8 +58,8 @@ impl KvStore {
     }
 
     /// Returns the value for the given key.
-    pub fn get(&mut self, k: String) -> Result<Option<String>> {
-        let cmd = self.indexed_log_file.read(k);
+    pub fn get(&self, k: String) -> Result<Option<String>> {
+        let cmd = self.indexed_log_file.lock().unwrap().read(k);
 
         // Don't error when key is not found.
         if let Err(KvStoreError::KeyNotFound) = cmd {
@@ -72,8 +74,8 @@ impl KvStore {
     }
 
     /// Sets the value for the given key.
-    pub fn set(&mut self, k: String, v: String) -> Result<()> {
-        self.indexed_log_file.write(Command::Set{k: k.clone(),v})?;
+    pub fn set(&self, k: String, v: String) -> Result<()> {
+        self.indexed_log_file.lock().unwrap().write(Command::Set{k: k.clone(),v})?;
 
         if self.should_compact() {
             return self.compact_log();
@@ -83,26 +85,26 @@ impl KvStore {
     }
 
     /// Removes the value of the given key.
-    pub fn remove(&mut self, k: String) -> Result<()> {
-        let exists = self.indexed_log_file.read(k.clone())?;
+    pub fn remove(&self, k: String) -> Result<()> {
+        let exists = self.indexed_log_file.lock().unwrap().read(k.clone())?;
         if exists.is_none() {
             return Err(KvStoreError::KeyNotFound);
         }
 
-        self.indexed_log_file.write(Command::Remove { k: k.clone() })
+        self.indexed_log_file.lock().unwrap().write(Command::Remove { k: k.clone() })
     }
 
-    fn should_compact(&mut self) -> bool {
-        let index_size = self.indexed_log_file.index.len();
+    fn should_compact(&self) -> bool {
+        let index_size = self.indexed_log_file.lock().unwrap().index.len();
 
-        let num_writes = self.indexed_log_file.log_file.num_writes;
+        let num_writes = self.indexed_log_file.lock().unwrap().log_file.num_writes;
 
         num_writes > 2 * index_size
     }
 
-    fn compact_log(&mut self) -> Result<()> {
+    fn compact_log(&self) -> Result<()> {
         // TODO: No reason to clone this thing except borrow checker.
-        let old_index = self.indexed_log_file.index.clone();
+        let old_index = self.indexed_log_file.lock().unwrap().index.clone();
 
         let tmp_folder = tempfile::tempdir()
             .map_err(|c| KvStoreError::OpenTmpDirFailure { c })?;
@@ -110,7 +112,7 @@ impl KvStore {
         let mut tmp_indexed_log = IndexedLogFile::new(tmp_folder.path())?;
 
         for (k, _offset) in old_index.iter() {
-            let cmd = self.indexed_log_file.read(k.to_string())?;
+            let cmd = self.indexed_log_file.lock().unwrap().read(k.to_string())?;
 
             let cmd = cmd.ok_or_else(|| KvStoreError::KeyNotFound)?;
 
@@ -124,7 +126,7 @@ impl KvStore {
 
         // TODO: This rebuilds the index again? We still have it in
         // tmp_indexed_log.index.
-        self.indexed_log_file = IndexedLogFile::new(&self.path)?;
+        *self.indexed_log_file.lock().unwrap() = IndexedLogFile::new(&self.path)?;
 
         Ok(())
     }
@@ -194,7 +196,7 @@ impl IndexedLogFile {
     }
 }
 
-// LogFile represents a database log file on disk.
+/// LogFile represents a database log file on disk.
 struct LogFile {
     reader: std::io::BufReader<std::fs::File>,
     // TODO: How about a buffered writer that we can flush once after
