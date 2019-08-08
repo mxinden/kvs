@@ -38,7 +38,7 @@ fn main() -> Result<()> {
         db: kvs::KvStore::open(std::path::Path::new("./"))?,
     };
 
-    let pool = kvs::thread_pool::NaiveThreadPool::new(0)?;
+    let pool = kvs::thread_pool::SharedQueueThreadPool::new(100)?;
 
     listen(addr.to_string(), pool, handler)?;
 
@@ -76,7 +76,7 @@ impl<E: kvs::KvsEngine> Handler<E> {
 
 fn listen<E, P>(addr: String, pool: P, handler: Handler<E>) -> Result<()>
 where
-    E: kvs::KvsEngine,
+    E: kvs::KvsEngine + std::panic::UnwindSafe,
     P: kvs::thread_pool::ThreadPool,
 {
     let listener = TcpListener::bind(addr)?;

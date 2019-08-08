@@ -1,5 +1,6 @@
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
+use std::sync::Mutex;
 
 use kvs::thread_pool::*;
 use kvs::Result;
@@ -10,23 +11,26 @@ fn spawn_counter<P: ThreadPool>(pool: P) -> Result<()> {
     const TASK_NUM: usize = 20;
     const ADD_COUNT: usize = 1000;
 
-    let wg = WaitGroup::new();
-    let counter = Arc::new(AtomicUsize::new(0));
+    let counter = Arc::new(Mutex::new(0));
 
     for _ in 0..TASK_NUM {
         let counter = Arc::clone(&counter);
-        let wg = wg.clone();
         pool.spawn(move || {
             for _ in 0..ADD_COUNT {
-                counter.fetch_add(1, Ordering::SeqCst);
+                *counter.lock().unwrap() += 1;
             }
-            drop(wg);
         })
     }
 
-    wg.wait();
-    assert_eq!(counter.load(Ordering::SeqCst), TASK_NUM * ADD_COUNT);
-    Ok(())
+    let start = std::time::Instant::now();
+
+    while std::time::Instant::now() - start < std::time::Duration::from_secs(5) {
+        if *counter.lock().unwrap() == TASK_NUM * ADD_COUNT {
+            return Ok(());
+        }
+    }
+
+    panic!("timeout");
 }
 
 fn spawn_panic_task<P: ThreadPool>() -> Result<()> {
