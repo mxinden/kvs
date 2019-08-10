@@ -20,8 +20,13 @@ pub mod thread_pool;
 
 mod store;
 
+/// Server implementation.
+pub mod server;
+
 /// KvsEngine represents the storage interface used by KvsServer.
 pub trait KvsEngine: Clone + Send + 'static {
+    /// Open a database.
+    fn open(path: &std::path::Path) -> Result<Self>;
     /// Set the value for the given key.
     fn set(&self, key: String, value: String) -> Result<()>;
     /// Get the value of the given key.

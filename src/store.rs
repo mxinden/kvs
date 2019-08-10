@@ -33,6 +33,9 @@ pub struct KvStore {
 }
 
 impl KvsEngine for KvStore {
+    fn open(path: &std::path::Path) -> Result<Self> {
+        KvStore::open(path)
+    }
     fn set(&self, key: String, value: String) -> Result<()> {
         KvStore::set(self, key, value)
     }
